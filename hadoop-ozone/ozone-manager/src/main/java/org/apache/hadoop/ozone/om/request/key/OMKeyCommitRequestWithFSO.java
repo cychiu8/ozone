@@ -339,14 +339,15 @@ public class OMKeyCommitRequestWithFSO extends OMKeyCommitRequest {
 
     OmBucketInfo omBucketInfo = getBucketInfoForUpdate(omMetadataManager, volumeName, bucketName);
 
-    // Deferred from Phase 1: mark the overwritten hsync open key, under the lock with the rest.
+    CommitApplyState state = new CommitApplyState();
+    applyCommitQuota(ozoneManager, commitKeyRequest, prepared, omBucketInfo, state, trxnLogIndex);
+
+    // Deferred from Phase 1: mark the overwritten hsync open key only now that the commit can no
+    // longer be rejected by the quota checks.
     if (prepared.isOverwrittenHsyncKey) {
       OMFileRequest.addOpenFileTableCacheEntry(omMetadataManager,
           prepared.dbOpenKeyToDeleteKey, prepared.openKeyToDelete, keyName, trxnLogIndex);
     }
-
-    CommitApplyState state = new CommitApplyState();
-    applyCommitQuota(ozoneManager, commitKeyRequest, prepared, omBucketInfo, state, trxnLogIndex);
 
     // let the uncommitted blocks pretend as key's old version blocks
     // which will be deleted as RepeatedOmKeyInfo
