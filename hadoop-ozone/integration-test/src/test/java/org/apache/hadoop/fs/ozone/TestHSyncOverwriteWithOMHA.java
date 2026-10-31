@@ -1,12 +1,12 @@
 /*
  * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
+ * contributor license agreements. See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
+ * the License. You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -54,7 +54,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 
 /**
- * MC-3: a rejected overwrite commit leaves OVERWRITTEN_HSYNC_KEY on another writer's open
+ * HDDS-16765: a rejected overwrite commit leaves OVERWRITTEN_HSYNC_KEY on another writer's open
  * entry in the open file table cache until the double buffer flushes and evicts that epoch.
  *
  * Client sequence (FileSystem API only), bucket namespace quota = 2:
@@ -68,9 +68,9 @@ import org.junit.jupiter.api.TestMethodOrder;
  * buffer at its own pace.
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-public class TestBugMC3FailedOverwriteCommit {
+public class TestHSyncOverwriteWithOMHA {
   private static final OzoneConfiguration CONF = new OzoneConfiguration();
-  private static final String OM_SERVICE_ID = "omservice-mc3";
+  private static final String OM_SERVICE_ID = "omservice-hsync-overwrite";
   private static MiniOzoneHAClusterImpl cluster;
   private static OzoneClient client;
   private static FileSystem fs;
@@ -100,7 +100,7 @@ public class TestBugMC3FailedOverwriteCommit {
   }
 
   private static void log(String s) {
-    System.out.println("[MC-3] " + s);
+    System.out.println("[HSyncOverwriteHA] " + s);
   }
 
   private static String describe(Throwable t) {
@@ -314,7 +314,7 @@ public class TestBugMC3FailedOverwriteCommit {
   @Test
   @Order(1)
   public void level0Race() throws Exception {
-    int rounds = Integer.getInteger("mc3.rounds", 40);
+    int rounds = Integer.getInteger("hsync.overwrite.rounds", 40);
     int hit = 0;
     int diverged = 0;
     int bRejected = 0;
@@ -333,7 +333,8 @@ public class TestBugMC3FailedOverwriteCommit {
     log("LEVEL 0 SUMMARY: rounds=" + rounds + " B rejected with QUOTA_EXCEEDED=" + bRejected
         + " A rejected as 'already deleted/overwritten'=" + hit + " rounds with diverged replicas=" + diverged);
     if (hit > 0) {
-      log("BUG MC-3 TRIGGERED (level 0): writer A was rejected as overwritten although the overwrite was rejected");
+      log("BUG HDDS-16765 TRIGGERED (level 0): writer A was rejected as overwritten although the overwrite"
+          + " was rejected");
     }
   }
 
@@ -352,7 +353,7 @@ public class TestBugMC3FailedOverwriteCommit {
   public void level1FollowerFlushLags() throws Exception {
     Outcome o = run("LEVEL 1 follower flush lags", follower(), false);
     if (o.bClose != null && o.aHsync == null && o.aClose == null && !o.replicasAgree()) {
-      log("BUG MC-3 TRIGGERED (level 1, follower): client A saw success, but the OM RocksDBs differ");
+      log("BUG HDDS-16765 TRIGGERED (level 1, follower): client A saw success, but the OM RocksDBs differ");
     }
   }
 
@@ -362,8 +363,8 @@ public class TestBugMC3FailedOverwriteCommit {
   public void level1LeaderFlushLags() throws Exception {
     Outcome o = run("LEVEL 1 leader flush lags", cluster.getOMLeader(), false);
     if (o.bClose != null && isOverwrittenRejection(o.aClose) && !o.replicasAgree()) {
-      log("BUG MC-3 TRIGGERED (level 1, leader): client A was rejected as overwritten, followers applied its commit,"
-          + " and the OM RocksDBs differ");
+      log("BUG HDDS-16765 TRIGGERED (level 1, leader): client A was rejected as overwritten, followers applied"
+          + " its commit, and the OM RocksDBs differ");
     }
   }
 }
