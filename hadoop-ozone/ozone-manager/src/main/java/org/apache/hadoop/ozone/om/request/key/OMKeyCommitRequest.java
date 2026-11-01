@@ -380,7 +380,7 @@ public class OMKeyCommitRequest extends OMKeyRequest {
           omBucketInfo.getObjectID(), pseudoKeyInfo, oldKeyVersionsToDeleteMap);
 
       // Add to cache of open key table and key table.
-      if (openKeyToDelete != null) {
+      if (isOverwrittenHsyncKey) {
         // Flag the overwritten open key only now that the commit can no longer be rejected.
         omMetadataManager.getOpenKeyTable(getBucketLayout()).addCacheEntry(
             dbOpenKeyToDeleteKey, openKeyToDelete, trxnLogIndex);
