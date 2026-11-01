@@ -17,6 +17,7 @@
 
 package org.apache.hadoop.fs.ozone;
 
+import static org.apache.hadoop.ozone.OzoneConsts.OM_KEY_PREFIX;
 import static org.apache.hadoop.ozone.OzoneConsts.OZONE_OFS_URI_SCHEME;
 import static org.apache.ozone.test.OzoneTestBase.uniqueObjectName;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -87,7 +88,9 @@ public class TestHSyncOverwriteWithOMHA {
   private static MiniOzoneHAClusterImpl cluster;
   private static OzoneClient client;
   private static FileSystem fs;
-  /** Directory of a bucket with no namespace quota, used only for the Ratis ordering barrier. */
+  /** Bucket with no namespace quota, used only for the Ratis ordering barrier. */
+  private static OzoneBucket markerBucket;
+  /** Directory of {@link #markerBucket}. */
   private static Path markerDir;
 
   @BeforeAll
@@ -110,7 +113,7 @@ public class TestHSyncOverwriteWithOMHA {
         String.format("%s://%s/", OZONE_OFS_URI_SCHEME, OM_SERVICE_ID));
     fs = FileSystem.get(fsConf);
 
-    OzoneBucket markerBucket = DataTestUtil.createVolumeAndBucket(client, BucketLayout.FILE_SYSTEM_OPTIMIZED);
+    markerBucket = DataTestUtil.createVolumeAndBucket(client, BucketLayout.FILE_SYSTEM_OPTIMIZED);
     markerDir = new Path("/" + markerBucket.getVolumeName() + "/" + markerBucket.getName());
   }
 
@@ -196,7 +199,7 @@ public class TestHSyncOverwriteWithOMHA {
 
     if (syncFlushes) {
       for (OzoneManager om : cluster.getOzoneManagersList()) {
-        awaitOpenFileCacheFlush(om, fileName);
+        awaitOpenFileCacheFlush(om, bucket, fileName);
       }
     }
 
@@ -213,7 +216,7 @@ public class TestHSyncOverwriteWithOMHA {
       if (syncFlushes) {
         for (OzoneManager om : cluster.getOzoneManagersList()) {
           if (om != laggingOm) {
-            awaitOpenFileCacheFlush(om, fileName);
+            awaitOpenFileCacheFlush(om, bucket, fileName);
           }
         }
       }
@@ -254,26 +257,51 @@ public class TestHSyncOverwriteWithOMHA {
    * Waits until the double buffer of {@code om} has flushed far enough to evict every open file
    * table cache entry of the file.
    */
-  private static void awaitOpenFileCacheFlush(OzoneManager om, String fileName) throws Exception {
+  private static void awaitOpenFileCacheFlush(OzoneManager om, OzoneBucket bucket, String fileName) throws Exception {
+    String openFilePrefix = openFilePrefix(om, bucket, fileName);
     GenericTestUtils.waitFor(() -> {
       try {
         om.awaitDoubleBufferFlush();
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
       }
-      return !hasCachedOpenFileEntry(om, fileName);
+      return !hasCachedOpenFileEntry(om, openFilePrefix);
     }, 250, 10000);
   }
 
-  private static boolean hasCachedOpenFileEntry(OzoneManager om, String fileName) {
+  /**
+   * Does the open file table cache of {@code om} still hold an entry under this open file key prefix.
+   * Entries are matched on the key alone, since a commit leaves a tombstone behind in the cache until
+   * the flush evicts it.
+   */
+  private static boolean hasCachedOpenFileEntry(OzoneManager om, String openFilePrefix) {
     Iterator<Map.Entry<CacheKey<String>, CacheValue<OmKeyInfo>>> iterator =
         om.getMetadataManager().getOpenKeyTable(BucketLayout.FILE_SYSTEM_OPTIMIZED).cacheIterator();
     while (iterator.hasNext()) {
-      if (iterator.next().getKey().getCacheKey().contains("/" + fileName + "/")) {
+      if (iterator.next().getKey().getCacheKey().startsWith(openFilePrefix)) {
         return true;
       }
     }
     return false;
+  }
+
+  /**
+   * Open file table key prefix that every entry of the file shares on {@code om}: its whole DB key
+   * except the client id, which the FileSystem API does not expose.
+   */
+  private static String openFilePrefix(OzoneManager om, OzoneBucket bucket, String fileName) throws IOException {
+    return ozonePathKey(om, bucket, fileName) + OM_KEY_PREFIX;
+  }
+
+  /**
+   * FSO path key of the file as {@code om} holds it. The file is created directly under the bucket,
+   * so the bucket is its parent.
+   */
+  private static String ozonePathKey(OzoneManager om, OzoneBucket bucket, String fileName) throws IOException {
+    OMMetadataManager metadataManager = om.getMetadataManager();
+    long volumeId = metadataManager.getVolumeId(bucket.getVolumeName());
+    long bucketId = metadataManager.getBucketId(bucket.getVolumeName(), bucket.getName());
+    return metadataManager.getOzonePathKey(volumeId, bucketId, bucketId, fileName);
   }
 
   /**
@@ -284,7 +312,8 @@ public class TestHSyncOverwriteWithOMHA {
   private static void awaitLaggingOmCaughtUp(OzoneManager laggingOm) throws Exception {
     String markerName = uniqueObjectName("marker-");
     fs.create(new Path(markerDir, markerName), true).close();
-    GenericTestUtils.waitFor(() -> hasCachedOpenFileEntry(laggingOm, markerName), 250, 10000);
+    String markerPrefix = openFilePrefix(laggingOm, markerBucket, markerName);
+    GenericTestUtils.waitFor(() -> hasCachedOpenFileEntry(laggingOm, markerPrefix), 250, 10000);
   }
 
   /**
@@ -308,12 +337,8 @@ public class TestHSyncOverwriteWithOMHA {
 
   /** Size of the file as RocksDB holds it on one OM, -1 if absent. getSkipCache bypasses the table cache. */
   private static long committedSize(OzoneManager om, OzoneBucket bucket, String fileName) throws IOException {
-    OMMetadataManager metadataManager = om.getMetadataManager();
-    long volumeId = metadataManager.getVolumeId(bucket.getVolumeName());
-    long bucketId = metadataManager.getBucketId(bucket.getVolumeName(), bucket.getName());
-    // The file is created directly under the bucket, so the bucket is its parent.
-    String dbKey = metadataManager.getOzonePathKey(volumeId, bucketId, bucketId, fileName);
-    OmKeyInfo keyInfo = metadataManager.getKeyTable(BucketLayout.FILE_SYSTEM_OPTIMIZED).getSkipCache(dbKey);
+    OmKeyInfo keyInfo = om.getMetadataManager().getKeyTable(BucketLayout.FILE_SYSTEM_OPTIMIZED)
+        .getSkipCache(ozonePathKey(om, bucket, fileName));
     return keyInfo == null ? -1 : keyInfo.getDataSize();
   }
 }
